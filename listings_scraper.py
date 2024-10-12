@@ -8,6 +8,25 @@ import asyncio
 import sys
 from bs4 import BeautifulSoup
 import value_scraper
+import mysql.connector
+import json
+import re
+import sshtunnel
+import MySQLdb
+
+class Listing:
+    def __init__(self):
+        self.title = ''
+        self.set = None
+        self.link = None
+        self.price = None
+        self.valuation = None
+        self.price_gbp = None
+        self.seller_info = None
+        self.identified_as = None
+        self.price_diff_percent = None
+        self.price_diff_raw = None
+        self.postage = None
 
 class Value:
     def __init__(self):
@@ -18,11 +37,20 @@ class Value:
         self.psa10 = None
         self.card_id = None
 
+GBP_USD = 1.31
+
+
+def strip_unsupported_characters(input_string):
+    # Remove any character that is not a valid ASCII character
+    return re.sub(r'[^\x00-\x7F]+', '', input_string)
+
 async def fetch(url, session):
     async with session.get(url) as response:
         return await response.text()
 
 def get_card_id(title):
+    if 'booster pack' in title: return 'booster pack'
+    if 'booster box' in title: return 'booster box'
     for word in title.split(" "):
         if '/' in word or '#' in word:
             word = word.replace('#','')
@@ -32,32 +60,68 @@ def get_card_id(title):
             return word
     return None
 
-async def get_all_pages(region, set_names, num_pages, values_dict):
+async def get_all_listings(region, set_names, num_pages, values_dict):
     urls = []
+    url_batches = []
+    already_scraped = []
+    i = 0
     for set_name in set_names:
         search = 'pokemon tcg ' + set_name
         for page_num in range(1, num_pages + 1):
+            i += 1
             site = 'ebay.com'
             if region == 'UK': site = 'www.ebay.co.uk'
             if region == 'CA': site = 'ebay.ca'
             search_query = search.replace(" ", "+")
             url = 'https://' + site + '/sch/i.html?_nkw=' + search_query + '&_dmd=1&_ipg=240&_pgn=' + str(page_num)
             urls.append((set_name, url))
-
+            if i % 15 == 0:
+                url_batches.append(urls)
+                urls = list([])
+    if len(urls) > 0:
+        url_batches.append(urls)
+    all_listings = []
     async with aiohttp.ClientSession() as session:
-        results = await asyncio.gather(*[fetch(url, session) for _, url in urls])
+        j = 0
         tot_listings = 0
-        for i, result in enumerate(results):
-            url = urls[i][1]
-            set_name = urls[i][0]
-            search_query = 'pokemon tcg ' + set_name
-            count = get_listings(search_query, region, set_name, result, values_dict)
-            tot_listings += count
-            print("Total listings:", tot_listings)
-            print("Page:", i + 1)
+        #all_listings = []
+        for urls in url_batches:
+            j += 1
+            results = await asyncio.gather(*[fetch(url, session) for _, url in urls])
+            print(len(results), len(urls))
+            #sys.exit()
+            for i, result in enumerate(results):
+                url = urls[i][1]
+                set_name = urls[i][0]
+                if set_name not in values_dict: continue
+                search_query = 'pokemon tcg ' + set_name
+                count, already_scraped, new_listings = get_listings(search_query, region, set_name, result, values_dict[set_name], already_scraped)
+                for listing in new_listings:
+                    all_listings.append(listing)
+                tot_listings += count
+                print("Total listings:", tot_listings)
+                print("Page:", i + 1)
+                print("Progress:", j, "/", len(url_batches))
+         #       print(urls)
+    return all_listings
 
-def get_listings(search, region, set_name, result, values_dict):
+def is_card_match(title, card_name):
+    bracket_text = ''
+    if "[" in card_name and "]":
+        bracket_text = card_name.split("[")[1].split("]")[0]
+    pokemon_text = card_name
+    if "[" in card_name:
+        pokemon_text = card_name.split("[")[0]
+    if "#" in pokemon_text:
+        pokemon_text = pokemon_text.split("#")[0]
+    pokemon_text = pokemon_text.strip()
+    if pokemon_text in title and bracket_text in title:
+        return True
+    return False
+
+def get_listings(search, region, set_name, result, set_values, already_scraped):
     soup = BeautifulSoup(result, 'lxml')
+    all_listings = []
     tot_listings = 0
     title_images = {img_tag.get('alt'): img_tag['src'] for img_tag in soup.find_all('img') if 'https://i.ebayimg.com/images/g/' in img_tag['src']}
     item_title = ''
@@ -89,6 +153,7 @@ def get_listings(search, region, set_name, result, values_dict):
                     if '£' in word or '$' in word:
                         item_postage = word
                         break
+                item_postage = item_postage.replace("+",'')
                 if 'Free' in item_postage:
                     item_postage = 'Free'
                 print("---")
@@ -99,75 +164,301 @@ def get_listings(search, region, set_name, result, values_dict):
                 print('Price:', item_price)
                 print('Postage:', item_postage)
                 print('Seller info:', item_seller_info)
+                if item_link in already_scraped:
+                    continue
+                already_scraped.append(item_link)
                 # get card id
                 card_id = get_card_id(item_title)
                 if card_id is None: continue
-                if set_name not in values_dict: continue
-                #print(set_name)
-                print(card_id)
-                if card_id not in values_dict[set_name]: continue
-                value_info = values_dict[set_name][card_id]
+                if card_id not in set_values: continue
+                value_info = set_values[card_id]
+                if len(value_info) == 1:
+                    value_info = value_info[0]
+                else:
+                    matches = []
+                    for info in value_info:
+                        is_match = is_card_match(item_title,info.name)
+                        if is_match:
+                            matches.append(info)
+                    if len(matches) > 1:
+                        biggest_name = 0
+                        winner = None
+                        for match in matches:
+                            if len(match.name) > biggest_name:
+                                winner = match
+                                biggest_name = len(match.name)
+                        value_info = winner
+                    else:
+                        if len(matches) == 1: value_info = matches[0]
+                        else:
+                            continue # doesn't match card in values list
                 ungraded_price = value_info.ungraded
                 print('Identified as:', value_info.name)
                 print('Ungraded:', ungraded_price)
+                orig_price = item_price
+                item_price = item_price.replace("£", "").replace("$", "").replace(",", "")
+                item_price = float(item_price)
+                if "£" in orig_price:
+                    item_price *= GBP_USD
+                    print("adjusted price")
+
+                item_price = float(item_price)
+                listing = Listing()
+                listing.title = item_title
+                listing.set = set_name
+                if value_info.ungraded is None or value_info.ungraded == 'None': value_info.ungraded = 0
+                listing.valuation = float(value_info.ungraded)
+                listing.link = item_link
+                listing.image = item_image
+                postage = item_postage.replace("£", "").replace("$", "").replace(",", "")
+                if item_postage == 'Free' or item_postage == 'Postage not specified':
+                    postage = 0
+                if postage != '': postage = float(postage)
+                listing.postage = postage
+                listing.price = float(item_price)
+                listing.identified_as = value_info.name
+                listing.seller_info = item_seller_info
+                listing.price_diff_raw = float(value_info.ungraded) - float(item_price)
+                listing.price_diff_percent = round((listing.price_diff_raw / item_price) * 100,1)
+                all_listings.append(listing)
                 tot_listings += 1
 
     print(set_name + ":", tot_listings)
-    return tot_listings
+    return tot_listings, already_scraped, all_listings
 
-async def main():
-    start_time = time.time()
+def get_values_from_db():
+    with open('sql_login.json', 'r') as config_file:
+        config = json.load(config_file)
+
+    connection = mysql.connector.connect(
+        host=config['host'],
+        user=config['user'],
+        password=config['password'],
+        database=config['database'],
+        auth_plugin=config['auth_plugin']  # Specify the authentication plugin
+    )
+
+    cursor = connection.cursor()
+
+    # Define the query
+    query = "SELECT * FROM card_values"
+
+    # Execute the query with parameters
+    cursor.execute(query)
+
+    # Fetch all results
+    results = cursor.fetchall()
+    values_dict = {}
+    # Print the results
+    for row in results:
+        card_id = row[6]
+        if card_id is None: continue
+        set_name = row[2]
+        if set_name.lower() not in values_dict:
+            values_dict[set_name.lower()] = {}
+        if card_id not in values_dict[set_name.lower()]:
+            values_dict[set_name.lower()][card_id] = []
+        value = Value()
+        value.name = row[1]
+        value.set = row[2]
+        value.card_id = card_id
+        value.ungraded = row[3]
+        value.psa9 = row[4]
+        value.psa10 = row[5]
+        values_dict[set_name.lower()][card_id].append(value)
+    return values_dict
+
+def write_listings_to_db_remote(listings):
+    file = 'sql_login_pa.json'
+    with open(file, 'r') as config_file:
+        config = json.load(config_file)
+    with open('ssh_config.json', 'r') as config_file:
+        ssh_config = json.load(config_file)
+
+    with sshtunnel.SSHTunnelForwarder(
+            ('ssh.pythonanywhere.com'),
+            ssh_username=ssh_config['user'],
+            ssh_password=ssh_config['password'],
+            remote_bind_address=(
+            ssh_config['host'], 3306)
+    ) as tunnel:
+        connection = MySQLdb.connect(
+            user=config['user'],
+            passwd=config['password'],
+            host='127.0.0.1', port=tunnel.local_bind_port,
+            db=config['database'],
+        )
+        '''
+        # Establish a connection to the MySQL server
+        connection = mysql.connector.connect(
+            host=config['host'],
+            user=config['user'],
+            password=config['password'],
+            database=config['database'],
+            auth_plugin=config['auth_plugin']  # Specify the authentication plugin
+        )
+        '''
+        # Create a cursor object to execute SQL commands
+        cursor = connection.cursor()
+        drop_table_query = 'DROP TABLE IF EXISTS listings;'
+        cursor.execute(drop_table_query)
+
+        create_table_query = '''
+        CREATE TABLE IF NOT EXISTS listings (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            title VARCHAR(100),
+            set_name VARCHAR(100),
+            valuation VARCHAR(100),
+            price VARCHAR(100),
+            image VARCHAR(100),
+            postage VARCHAR(100),
+            link VARCHAR(100),
+            seller_info VARCHAR(100),
+            price_diff_raw VARCHAR(100),
+            price_diff_percent VARCHAR(100),
+            identified_as VARCHAR(100),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        '''
+        cursor.execute(create_table_query)
+        i = 0
+        batch_size = 500
+        batch_data = []
+        for listing in listings:
+            i += 1
+            if i % 50 == 0: print(i)
+            insert_query = '''
+            INSERT INTO listings (title, set_name, valuation, price, image, postage, link, seller_info, price_diff_raw, price_diff_percent, identified_as)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+            '''
+            # Prepare the data as a tuple
+            data = (
+                strip_unsupported_characters(listing.title),
+                listing.set,
+                str(listing.valuation),
+                str(listing.price),
+                listing.image,
+                str(listing.postage),
+                listing.link,
+                listing.seller_info,
+                str(listing.price_diff_raw),
+                str(listing.price_diff_percent),
+                listing.identified_as
+            )
+            # Append the current row's data to the batch
+            batch_data.append(data)
+
+            # If we have enough data for a batch, execute the insert
+            if len(batch_data) == batch_size:
+                cursor.executemany(insert_query, batch_data)
+                batch_data.clear()  # Clear the batch for the next set of data
+                connection.commit()
+            # print(insert_query, data)
+            # Execute the query with the data
+            #cursor.execute(insert_query, data)
+        if batch_data:
+            cursor.executemany(insert_query, batch_data)  # Insert remaining data
+            connection.commit()
+        connection.commit()
+        cursor.close()
+        connection.close()
+
+
+def write_listings_to_db_local(listings):
+    file = 'sql_login.json'
+    with open(file, 'r') as config_file:
+        config = json.load(config_file)
+
+        # Establish a connection to the MySQL server
+        connection = mysql.connector.connect(
+            host=config['host'],
+            user=config['user'],
+            password=config['password'],
+            database=config['database'],
+            auth_plugin=config['auth_plugin']  # Specify the authentication plugin
+        )
+        # Create a cursor object to execute SQL commands
+        cursor = connection.cursor()
+        drop_table_query = 'DROP TABLE IF EXISTS listings;'
+        cursor.execute(drop_table_query)
+
+        create_table_query = '''
+        CREATE TABLE IF NOT EXISTS listings (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            title VARCHAR(100),
+            set_name VARCHAR(100),
+            valuation VARCHAR(100),
+            price VARCHAR(100),
+            image VARCHAR(100),
+            postage VARCHAR(100),
+            link VARCHAR(100),
+            seller_info VARCHAR(100),
+            price_diff_raw VARCHAR(100),
+            price_diff_percent VARCHAR(100),
+            identified_as VARCHAR(100),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        '''
+        cursor.execute(create_table_query)
+        i = 0
+        for listing in listings:
+            i += 1
+            if i % 50 == 0: print(i)
+            insert_query = '''
+            INSERT INTO listings (title, set_name, valuation, price, image, postage, link, seller_info, price_diff_raw, price_diff_percent, identified_as)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+            '''
+            # Prepare the data as a tuple
+            data = (
+                strip_unsupported_characters(listing.title),
+                listing.set,
+                str(listing.valuation),
+                str(listing.price),
+                listing.image,
+                str(listing.postage),
+                listing.link,
+                listing.seller_info,
+                str(listing.price_diff_raw),
+                str(listing.price_diff_percent),
+                listing.identified_as
+            )
+
+            # print(insert_query, data)
+            # Execute the query with the data
+            cursor.execute(insert_query, data)
+        connection.commit()
+        cursor.close()
+        connection.close()
+
+async def scrape_listings():
     set_names = []
     excluded_sets = []
     with open('excluded_sets.txt', 'r') as f:
         lines = f.readlines()
     for line in lines:
-        line = line.replace("\n","")
+        line = line.replace("\n", "")
         excluded_sets.append(line)
     with open('sets.txt', 'r') as f:
         lines = f.readlines()
+    i = 0
     for line in lines:
         set_name = line.strip().replace("Pokemon ", "")
         if set_name in excluded_sets: continue
-        set_names.append(set_name)
-    #set_names = [line.strip().replace("Pokemon ", "") for line in lines]
+        i += 1
+        if i > 10: break
+        set_names.append(set_name.lower())
 
-    # Get all values
-    #await get_all_values(set_names)
-
-    i = -1
-    '''
-    while i < len(set_names) - 1:
-        current_set_names = []
-        for j in range(50):
-            i += 1
-            if i >= len(set_names):
-                break
-            current_set_names.append(set_names[i])
-        await get_all_pages('UK', current_set_names, 2)
-    '''
-    #values = await get_all_values('fusion strike')
-    #values = await get_all_values('paradox rift')
-    #values = await get_all_values('team rocket')
-    #values = await get_all_values('base set')
-    #values = await get_all_values('astral radiance')
-    #values = await get_set_values(['astral radiance','fusion strike', 'base set', 'team rocket', 'paradox rift',
-    #'astral radiance','fusion strike', 'base set', 'team rocket', 'paradox rift'])
-    values = await value_scraper.get_set_values(['fusion strike'])
-
-    values_dict = {}
-    for value in values:
-    #    print(value.set, value.name)
-        if value.set not in values_dict:
-            values_dict[value.set] = {}
-        if value.card_id is None: continue
-        values_dict[value.set.lower()][value.card_id] = value
-   # print(values_dict['fusion strike']['28'])
-   # sys.exit()
+    values_dict = get_values_from_db()
     start_time = time.time()
-    await get_all_pages('UK' , ['fusion strike'], 10, values_dict)
+    all_listings = await get_all_listings('UK', set_names, 10, values_dict)
+    write_listings_to_db_local(all_listings)
+    write_listings_to_db_remote(all_listings)
+    print(len(all_listings))
+
+async def main():
+    start_time = time.time()
+    await scrape_listings()
     duration = time.time() - start_time
-    #await get_all_pages('UK', ['fusion strike'], 1, values_dict)
     print(f"Execution time: {duration:.2f} seconds")
 
 # Ensure we're only running asyncio.run() once and avoid nested loops

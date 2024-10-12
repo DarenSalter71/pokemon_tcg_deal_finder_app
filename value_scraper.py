@@ -1,12 +1,14 @@
 from concurrent.futures import ThreadPoolExecutor
 import time
 import mysql.connector
-from seleniumwire import webdriver
+from selenium import webdriver
 import asyncio
 import json
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+import sshtunnel
+import MySQLdb
 
 class Value:
     def __init__(self):
@@ -19,7 +21,7 @@ class Value:
 
 async def fetch_all_values(urls):
     # Use ThreadPoolExecutor to run multiple fetches in parallel
-    with ThreadPoolExecutor(max_workers=1) as executor:
+    with ThreadPoolExecutor(max_workers=12) as executor:
         loop = asyncio.get_event_loop()
         # Run all tasks concurrently using asyncio and ThreadPoolExecutor
         tasks = [loop.run_in_executor(executor, fetch_values, url) for url in urls]
@@ -48,6 +50,7 @@ def fetch_values(url):
     print(url)
     SCROLL_PAUSE_TIME = 0
     chrome_options = webdriver.ChromeOptions()
+    chrome_options.add_argument("--start-maximized")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--disable-gpu")
@@ -57,13 +60,16 @@ def fetch_values(url):
     # Optional: Disable images and JavaScript if not necessary
     chrome_options.add_argument("--disable-images")
     #chrome_options.add_argument("--disable-javascript")
-    chrome_options.add_argument("--window-size=600,400")
+  #  chrome_options.add_argument("--window-size=600,400")
+    chrome_options.add_argument("--window-position=-6000,-4000")
+    #chrome_options.add_argument("--remote-debugging-port=9222")
     chrome_options.page_load_strategy = 'eager'
     #chrome_options.add_argument("--window-size=1024,768")
     browser = None
     for i in range(3):
         try:
             browser = webdriver.Chrome(options=chrome_options)
+            time.sleep(1)
             browser.set_page_load_timeout(30)
             break
         except Exception as e:
@@ -184,18 +190,106 @@ async def scrape_values():
         set_name = line.strip().replace("Pokemon ", "")
         if set_name in excluded_sets: continue
         set_names.append(set_name)
-        if i > 2: break
+        #if i >= 0: break
         i += 1
    # set_names = ['fusion strike','paradox rift']
   #  set_names = ['fusion strike']
     values = await get_set_values(set_names)
-    #write_values_to_db(values)
+    write_values_to_db_local(values)
+    write_values_to_db_remote(values)
     #print("Got", len(values),"values")
     duration = time.time() - start_time
     print("total cards:", len(values))
     print(f"Execution time: {duration:.2f} seconds")
 
-def write_values_to_db(values):
+def write_values_to_db_remote(values):
+    file = 'sql_login_pa.json'
+    with open(file, 'r') as config_file:
+        config = json.load(config_file)
+    with open('ssh_config.json', 'r') as config_file:
+        ssh_config = json.load(config_file)
+
+    with sshtunnel.SSHTunnelForwarder(
+            ('ssh.pythonanywhere.com'),
+            ssh_username=ssh_config['user'],
+            ssh_password=ssh_config['password'],
+            remote_bind_address=(
+            ssh_config['host'], 3306)
+    ) as tunnel:
+        connection = MySQLdb.connect(
+            user=config['user'],
+            passwd=config['password'],
+            host='127.0.0.1', port=tunnel.local_bind_port,
+            db=config['database']
+        )
+        print(connection)
+        # Create a cursor object to execute SQL commands
+        cursor = connection.cursor()
+        drop_table_query = 'DROP TABLE IF EXISTS card_values;'
+        cursor.execute(drop_table_query)
+        # Create a table
+        create_table_query = '''
+        CREATE TABLE IF NOT EXISTS card_values (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(100),
+            set_name VARCHAR(100),
+            ungraded_price VARCHAR(100),
+            psa9_price VARCHAR(100),
+            psa10_price VARCHAR(100),
+            card_id VARCHAR(100),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        '''
+        cursor.execute(create_table_query)
+        connection.ping(True)
+        i = 0
+        batch_size = 500  # You can set this to the desired batch size
+        batch_data = []  # This will hold the data for the current batch
+        i = 0  # Initialize a counter
+
+        for value in values:
+            i += 1
+            if i % 50 == 0:
+                print(i, "/", len(values))
+
+            # Prepare the data as a tuple
+            data = (
+                value.name,
+                value.set,
+                str(value.ungraded),
+                str(value.psa9),
+                str(value.psa10),
+                value.card_id
+            )
+
+            # Append the current row's data to the batch
+            batch_data.append(data)
+
+            # If we have enough data for a batch, execute the insert
+            if len(batch_data) == batch_size:
+                # Create the insert query with placeholders
+                insert_query = '''
+                INSERT INTO card_values (name, set_name, ungraded_price, psa9_price, psa10_price, card_id)
+                VALUES (%s, %s, %s, %s, %s, %s);
+                '''
+                # Execute the batch insert
+                cursor.executemany(insert_query, batch_data)
+                batch_data.clear()  # Clear the batch for the next set of data
+                connection.commit()
+        # Check for any remaining data that didn't make a full batch
+        if batch_data:
+            insert_query = '''
+                            INSERT INTO card_values (name, set_name, ungraded_price, psa9_price, psa10_price, card_id)
+                            VALUES (%s, %s, %s, %s, %s, %s);
+                            '''
+            cursor.executemany(insert_query, batch_data)  # Insert remaining data
+            connection.commit()
+    #connection.commit()
+    #connection.commit()
+    cursor.close()
+    connection.close()
+
+def write_values_to_db_local(values):
     with open('sql_login.json', 'r') as config_file:
         config = json.load(config_file)
 
@@ -226,7 +320,10 @@ def write_values_to_db(values):
     );
     '''
     cursor.execute(create_table_query)
+    i = 0
     for value in values:
+        i += 1
+        if i % 100 == 0: print(i,"/",len(values))
         # Create the insert query with placeholders
         insert_query = '''
         INSERT INTO card_values (name, set_name, ungraded_price, psa9_price, psa10_price, card_id)
@@ -246,10 +343,9 @@ def write_values_to_db(values):
         # Execute the query with the data
         cursor.execute(insert_query, data)
         #print(cursor.rowcount)
-        connection.commit()
+    connection.commit()
     cursor.close()
     connection.close()
-    print(len(values))
 
 
 async def main():
