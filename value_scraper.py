@@ -70,7 +70,6 @@ def fetch_values(url):
             print("except:", str(e))
     if browser is None: return ''
     browser.get(url)
-    element = WebDriverWait(browser, 10).until(EC.element_to_be_visible((By.ID, "js-loose-price")))
     prevHeight = browser.execute_script("return document.body.scrollHeight")
     atBottom = False # occasionally selenium lags, this ensures that we are truly at the bottom
     last_len = 0
