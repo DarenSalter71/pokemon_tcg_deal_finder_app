@@ -1,12 +1,12 @@
-import asyncio
 from concurrent.futures import ThreadPoolExecutor
-import requests
 import time
-import aiohttp
-from selenium import webdriver
+import mysql.connector
+from seleniumwire import webdriver
 import asyncio
-import sys
-from bs4 import BeautifulSoup
+import json
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
 class Value:
     def __init__(self):
@@ -17,28 +17,12 @@ class Value:
         self.psa10 = None
         self.card_id = None
 
-async def fetch_values_old(url, session):
-    text = []
-    for i in range(1, 10):
-        cursor_val = str((i - 1) * 50)
-        myobj = {
-            'sort': 'highest-price',
-            'cursor': cursor_val
-        }
-        async with session.post(url, json=myobj) as response:
-            response_text = await response.text()
-            text.append(response_text + "\n")
-    return text
-
 async def fetch_all_values(urls):
     # Use ThreadPoolExecutor to run multiple fetches in parallel
-    i = 0
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    with ThreadPoolExecutor(max_workers=1) as executor:
         loop = asyncio.get_event_loop()
         # Run all tasks concurrently using asyncio and ThreadPoolExecutor
         tasks = [loop.run_in_executor(executor, fetch_values, url) for url in urls]
-        i += 1
-        print(i)
         # Gather results
         return await asyncio.gather(*tasks)
 
@@ -67,10 +51,14 @@ def fetch_values(url):
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--disable-gpu")
-
+    chrome_options.add_argument('--ignore-certificate-errors')
+    chrome_options.add_argument('--ignore-ssl-errors')
+    chrome_options.add_argument('--log-level=3')
     # Optional: Disable images and JavaScript if not necessary
     chrome_options.add_argument("--disable-images")
-    chrome_options.add_argument("--disable-javascript")
+    #chrome_options.add_argument("--disable-javascript")
+    chrome_options.add_argument("--window-size=600,400")
+    chrome_options.page_load_strategy = 'eager'
     #chrome_options.add_argument("--window-size=1024,768")
     browser = None
     for i in range(3):
@@ -81,16 +69,31 @@ def fetch_values(url):
         except Exception as e:
             print("except:", str(e))
     if browser is None: return ''
-
     browser.get(url)
+    element = WebDriverWait(browser, 10).until(EC.element_to_be_visible((By.ID, "js-loose-price")))
     prevHeight = browser.execute_script("return document.body.scrollHeight")
     atBottom = False # occasionally selenium lags, this ensures that we are truly at the bottom
     last_len = 0
     cur_len = 0
+    max_items = 9999999
+    lines = browser.page_source.split("\n")
+    for i in range(800, 900):
+        if i > len(lines) - 1: break
+        line = lines[i]
+        if 'items' in line and '<span class="phone-landscape-hidden">' in browser.page_source:
+            # print(line)
+            max_items = int(line.split("/")[1].split("<")[0].strip())
+            #print(line)
+            break
+    last_time = time.time()
     while True:
+        items_count = len(browser.page_source.split("<td class=\"title\" title="))
+        if items_count >= max_items:
+            print("escaped")
+            break
         cur_len = len(browser.page_source)
         if cur_len == last_len:
-            if time.time() - last_time > 1.5: break
+            if time.time() - last_time > 3: break
             continue
         browser.execute_script("window.scrollTo(0, document.body.scrollHeight);")
         currHeight = browser.execute_script("return document.body.scrollHeight")
@@ -105,6 +108,7 @@ def fetch_values(url):
         last_time = time.time()
     source = browser.page_source
     browser.close()
+    browser.quit()
     return source
 
 def get_card_id(title):
@@ -117,8 +121,6 @@ def get_card_id(title):
             return word
     return None
 
-#print(get_card_id("2021 Pokémon Fusion Strike Espeon Vmax 270/264 Alt Art Secret Ace 10"))
-#sys.exit()
 def get_values(set_name, text):
     i = 0
     values = []
@@ -157,6 +159,7 @@ def get_values(set_name, text):
         for word in name.split(" "):
             if '#' in word:
                 value.card_id = word.replace("#","")
+                break
         if 'booster box' in name.lower():
             value.card_id = 'booster box'
         elif 'booster pack' in name.lower():
@@ -165,22 +168,94 @@ def get_values(set_name, text):
             values.append(value)
     return values
 
-async def get_all_values(set_name):
-    value_urls = []
-    #for set_name in set_names:
-    value_url = 'https://www.pricecharting.com/console/pokemon-' + set_name.replace(" ", "-") + '?sort=highest-price'
-    value_urls.append((set_name, value_url))
+async def scrape_values():
     values = []
-    async with aiohttp.ClientSession() as session:
-        value_results = await asyncio.gather(*[fetch_values(url) for _, url in value_urls])
-        for i, result in enumerate(value_results):
-            set_name = value_urls[i][0]
-            new_values = get_values(set_name, result)
-            for value in new_values:
-                values.append(value)
-    return values
+    start_time = time.time()
+    set_names = []
+    excluded_sets = []
+    with open('excluded_sets.txt', 'r') as f:
+        lines = f.readlines()
+    for line in lines:
+        line = line.replace("\n","")
+        excluded_sets.append(line)
+    with open('sets.txt', 'r') as f:
+        lines = f.readlines()
+    i = 0
+    for line in lines:
+        set_name = line.strip().replace("Pokemon ", "")
+        if set_name in excluded_sets: continue
+        set_names.append(set_name)
+        if i > 2: break
+        i += 1
+   # set_names = ['fusion strike','paradox rift']
+  #  set_names = ['fusion strike']
+    values = await get_set_values(set_names)
+    #write_values_to_db(values)
+    #print("Got", len(values),"values")
+    duration = time.time() - start_time
+    print("total cards:", len(values))
+    print(f"Execution time: {duration:.2f} seconds")
+
+def write_values_to_db(values):
+    with open('sql_login.json', 'r') as config_file:
+        config = json.load(config_file)
+
+    # Establish a connection to the MySQL server
+    connection = mysql.connector.connect(
+        host=config['host'],
+        user=config['user'],
+        password=config['password'],
+        database=config['database'],
+        auth_plugin=config['auth_plugin']  # Specify the authentication plugin
+    )
+
+    # Create a cursor object to execute SQL commands
+    cursor = connection.cursor()
+    drop_table_query = 'DROP TABLE IF EXISTS card_values;'
+    cursor.execute(drop_table_query)
+    # Create a table
+    create_table_query = '''
+    CREATE TABLE IF NOT EXISTS card_values (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(100),
+        set_name VARCHAR(100),
+        ungraded_price VARCHAR(100),
+        psa9_price VARCHAR(100),
+        psa10_price VARCHAR(100),
+        card_id VARCHAR(100),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    '''
+    cursor.execute(create_table_query)
+    for value in values:
+        # Create the insert query with placeholders
+        insert_query = '''
+        INSERT INTO card_values (name, set_name, ungraded_price, psa9_price, psa10_price, card_id)
+        VALUES (%s, %s, %s, %s, %s, %s);
+        '''
+        # Prepare the data as a tuple
+        data = (
+            value.name,
+            value.set,
+            str(value.ungraded),
+            str(value.psa9),
+            str(value.psa10),
+            value.card_id
+        )
+
+        #print(insert_query, data)
+        # Execute the query with the data
+        cursor.execute(insert_query, data)
+        #print(cursor.rowcount)
+        connection.commit()
+    cursor.close()
+    connection.close()
+    print(len(values))
+
 
 async def main():
+    await scrape_values()
+    '''
     start_time = time.time()
     set_names = []
     excluded_sets = []
@@ -198,25 +273,7 @@ async def main():
     #set_names = [line.strip().replace("Pokemon ", "") for line in lines]
 
     # Get all values
-    #await get_all_values(set_names)
-
-    i = -1
-    '''
-    while i < len(set_names) - 1:
-        current_set_names = []
-        for j in range(50):
-            i += 1
-            if i >= len(set_names):
-                break
-            current_set_names.append(set_names[i])
-        await get_all_pages('UK', current_set_names, 2)
-    '''
     #await get_all_pages('UK' , ['fusion strike'], 1)
-    #values = await get_all_values('fusion strike')
-    #values = await get_all_values('paradox rift')
-    #values = await get_all_values('team rocket')
-    #values = await get_all_values('base set')
-    #values = await get_all_values('astral radiance')
     values = await get_set_values(set_names)
     values_dict = {}
     for value in values:
@@ -229,6 +286,7 @@ async def main():
     #await get_all_pages('UK', ['fusion strike'], 1, values_dict)
     print("total cards:", len(values))
     print(f"Execution time: {duration:.2f} seconds")
+    '''
 
 # Ensure we're only running asyncio.run() once and avoid nested loops
 if __name__ == "__main__":
