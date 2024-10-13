@@ -156,6 +156,8 @@ def deal_page(request):
     if search_keywords is None:
         search_keywords = ''
     search_sort = request.args.get("sort")
+    if search_sort is None:
+        search_sort = 'None'
 
     html += f'''
         </style>
@@ -215,7 +217,8 @@ def deal_page(request):
     if search_auction_type not in valid_values:
         search_auction_type = 'Buy it now'
     search_keywords = request.args.get("search_query")
-
+    if search_keywords is None:
+        search_keywords = ''
     with open('/home/jimmyrustles/mysite/sql_login_pa.json', 'r') as config_file:
         config = json.load(config_file)
 
@@ -272,15 +275,12 @@ def deal_page(request):
 
             <div id="toggleText" style="width: 400px; display: none; font-family: verdana; font-size:16px">
                 <ul>
-                    <li>Pages</li>
                     <li>Search improvements</li>
                     <ul>
-                        <li>Search by keywords</li>
-                        <li>Region (US/UK)</li>
-                        <li>Auction type (Auction/Buy it now)</li>
-                        <li>Search by Card ID and set name</li>
+                        <li>Search by card ID and set name</li>
+                        <li>Search by card condition</li>
                     </ul>
-                    <li>Display currency in £GBP or $USD</li>
+                    <li>Graded cards</li>
                 </ul>
             </div>
 
