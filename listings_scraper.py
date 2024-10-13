@@ -29,6 +29,7 @@ class Listing:
         self.postage = None
         self.auction_type = None
         self.total_price = None
+        self.region = None
 
 class Value:
     def __init__(self):
@@ -111,6 +112,9 @@ def is_card_match(title, card_name):
     bracket_text = ''
     if "[" in card_name and "]":
         bracket_text = card_name.split("[")[1].split("]")[0]
+    if bracket_text == 'Holo':
+        if 'non holo' in title.lower() or 'non-holo' in title.lower():
+            return False
     pokemon_text = card_name
     if "[" in card_name:
         pokemon_text = card_name.split("[")[0]
@@ -176,6 +180,8 @@ def get_listings(search, region, set_name, result, set_values, already_scraped, 
                 if do_continue: continue
                 if 'not card' in item_title.lower(): continue
                 if "no card" in item_title.lower(): continue
+                if "display card" in item_title.lower(): continue
+                if "fan art" in item_title.lower(): continue
                 print("---")
                 print('Title:', item_title)
                 print('Type:', item_auction_type)
@@ -219,11 +225,13 @@ def get_listings(search, region, set_name, result, set_values, already_scraped, 
                 print('Identified as:', value_info.name)
                 print('Ungraded:', ungraded_price)
                 orig_price = item_price
+                orig_postage = item_postage
                 item_price = item_price.replace("£", "").replace("$", "").replace(",", "")
+                item_price = item_price.replace("GBP","")
+                item_price = item_price.strip()
                 item_price = float(item_price)
-                if "£" in orig_price:
+                if "£" in orig_price or "GBP" in orig_price:
                     item_price *= GBP_USD
-                    print("adjusted price")
 
                 item_price = float(item_price)
                 listing = Listing()
@@ -238,6 +246,8 @@ def get_listings(search, region, set_name, result, set_values, already_scraped, 
                     postage = 0
                 if isinstance(postage, str):
                     postage = float(0)
+                if "£" in orig_postage or "GBP" in orig_price:
+                    postage *= GBP_USD
                 postage = float(postage)
                 listing.postage = postage
                 item_price = float(item_price)
@@ -246,8 +256,21 @@ def get_listings(search, region, set_name, result, set_values, already_scraped, 
                 listing.seller_info = item_seller_info
                 listing.total_price = postage + item_price
                 listing.price_diff_raw = float(value_info.ungraded) - float(item_price + postage)
-                listing.price_diff_percent = round((listing.price_diff_raw / (item_price + postage)) * 100,1)
+                # Calculate the percentage difference based on valuation
+                price = listing.price
+                valuation = value_info.ungraded
+                if valuation != 0:  # To avoid division by zero
+                    price_diff_percent = ((valuation - price) / price) * 100
+                else:
+                    price_diff_percent = 0  # Handle zero valuation case
+
+                #if listing.price_diff_raw < 0:
+                 #rc   price_diff_percent = -price_diff_percent
+                listing.price_diff_percent = price_diff_percent
+                #average_price = (value_info.ungraded + listing.total_price) / 2
+                #listing.price_diff_percent = (abs(value_info.ungraded - listing.total_price) / average_price) * 100
                 listing.auction_type = item_auction_type
+                listing.region = region
                 all_listings.append(listing)
                 tot_listings += 1
 
@@ -349,20 +372,21 @@ def write_listings_to_db_remote(listings):
                     identified_as VARCHAR(100),
                     auction_type VARCHAR(100),
                     total_price FLOAT,
+                    region VARCHAR(100),
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
                 '''
                 cursor.execute(create_table_query)
                 i = 0
-                batch_size = 500
+                batch_size = 2000
                 batch_data = []
                 for listing in listings:
                     i += 1
                     if i % 50 == 0: print(i)
                     insert_query = '''
                     INSERT INTO listings (title, set_name, valuation, price, image, postage, link, seller_info, price_diff_raw, price_diff_percent, identified_as, auction_type,
-                    total_price)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+                    total_price, region)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
                     '''
                     # Prepare the data as a tuple
                     data = (
@@ -378,7 +402,8 @@ def write_listings_to_db_remote(listings):
                         listing.price_diff_percent,
                         listing.identified_as,
                         listing.auction_type,
-                        listing.total_price
+                        listing.total_price,
+                        listing.region
                     )
                     # Append the current row's data to the batch
                     batch_data.append(data)
@@ -397,6 +422,7 @@ def write_listings_to_db_remote(listings):
                 connection.commit()
                 cursor.close()
                 connection.close()
+                break
         except:
             wait_time = 2 ** attempt
             print("Exception occured, trying again in", wait_time, "seconds")
@@ -437,6 +463,7 @@ def write_listings_to_db_local(listings):
             identified_as VARCHAR(100),
             auction_type VARCHAR(100),
             total_price FLOAT,
+            region VARCHAR(100),
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         '''
@@ -447,8 +474,8 @@ def write_listings_to_db_local(listings):
             if i % 50 == 0: print(i)
             insert_query = '''
             INSERT INTO listings (title, set_name, valuation, price, image, postage, link, seller_info, price_diff_raw, price_diff_percent, identified_as, auction_type,
-            total_price)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+            total_price, region)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
             '''
             # Prepare the data as a tuple
             data = (
@@ -464,7 +491,8 @@ def write_listings_to_db_local(listings):
                 listing.price_diff_percent,
                 listing.identified_as,
                 listing.auction_type,
-                listing.total_price
+                listing.total_price,
+                listing.region
             )
 
             # print(insert_query, data)
@@ -496,6 +524,8 @@ async def scrape_listings():
     values_dict = get_values_from_db()
     start_time = time.time()
     all_listings = await get_all_listings('UK', set_names, 10, values_dict, all_set_names)
+    all_listings += await get_all_listings('US', set_names, 10, values_dict, all_set_names)
+
     write_listings_to_db_local(all_listings)
     write_listings_to_db_remote(all_listings)
     print(len(all_listings))
