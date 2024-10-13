@@ -27,6 +27,8 @@ class Listing:
         self.price_diff_percent = None
         self.price_diff_raw = None
         self.postage = None
+        self.auction_type = None
+        self.total_price = None
 
 class Value:
     def __init__(self):
@@ -60,7 +62,7 @@ def get_card_id(title):
             return word
     return None
 
-async def get_all_listings(region, set_names, num_pages, values_dict):
+async def get_all_listings(region, set_names, num_pages, values_dict, full_set_names):
     urls = []
     url_batches = []
     already_scraped = []
@@ -95,7 +97,7 @@ async def get_all_listings(region, set_names, num_pages, values_dict):
                 set_name = urls[i][0]
                 if set_name not in values_dict: continue
                 search_query = 'pokemon tcg ' + set_name
-                count, already_scraped, new_listings = get_listings(search_query, region, set_name, result, values_dict[set_name], already_scraped)
+                count, already_scraped, new_listings = get_listings(search_query, region, set_name, result, values_dict[set_name], already_scraped, full_set_names)
                 for listing in new_listings:
                     all_listings.append(listing)
                 tot_listings += count
@@ -115,11 +117,11 @@ def is_card_match(title, card_name):
     if "#" in pokemon_text:
         pokemon_text = pokemon_text.split("#")[0]
     pokemon_text = pokemon_text.strip()
-    if pokemon_text in title and bracket_text in title:
+    if pokemon_text.lower() in title.lower() and bracket_text.lower() in title.lower():
         return True
     return False
 
-def get_listings(search, region, set_name, result, set_values, already_scraped):
+def get_listings(search, region, set_name, result, set_values, already_scraped, full_set_names):
     soup = BeautifulSoup(result, 'lxml')
     all_listings = []
     tot_listings = 0
@@ -130,6 +132,7 @@ def get_listings(search, region, set_name, result, set_values, already_scraped):
     item_price = ''
     item_postage = ''
     item_seller_info = ''
+    item_auction_type = ''
     for span_tag in soup.find_all('span'):
         text = span_tag.get_text().replace('New listing', '').replace('New Listing', '')
         if span_tag.get('role') == 'heading':
@@ -145,6 +148,14 @@ def get_listings(search, region, set_name, result, set_values, already_scraped):
                 item_seller_info = text
             if span_tag.get('class') == ['s-item__shipping', 's-item__logisticsCost']:
                 item_postage = text
+            if span_tag.get('class') == ['s-item__dynamic', 's-item__formatBuyItNow']:
+                item_auction_type = 'Buy it now'
+            if span_tag.get('class') == ['s-item__dynamic', 's-item__formatBestOfferEnabled']:
+                item_auction_type = 'Auction'
+            if span_tag.get('class') == ['s-item__bids', 's-item__bidCount']:
+                item_auction_type = 'Auction'
+            if ' bids' in text:
+                item_auction_type = 'Auction'
             if span_tag.get('class') == ['s-item__space_bar']:
                 if " to " in item_price or set_name.lower() not in item_title.lower():
                     continue
@@ -156,8 +167,18 @@ def get_listings(search, region, set_name, result, set_values, already_scraped):
                 item_postage = item_postage.replace("+",'')
                 if 'Free' in item_postage:
                     item_postage = 'Free'
+                do_continue = False
+                for cur_set in full_set_names:
+                    if cur_set.lower() in item_title.lower() and cur_set.lower() != set_name.lower(): do_continue = True # avoid reprints in other sets
+                banned_words = ['custom', 'opened', 'poster', 'sticker', 'german', 'japanese', 'korean', 'chinese', 'spanish', 'open', 'empty']
+                for word in banned_words:
+                    if word in item_title.lower().split(" "): do_continue = True
+                if do_continue: continue
+                if 'not card' in item_title.lower(): continue
+                if "no card" in item_title.lower(): continue
                 print("---")
                 print('Title:', item_title)
+                print('Type:', item_auction_type)
                 print('Set name:', set_name)
                 print('Link:', item_link)
                 print('Image:', item_image)
@@ -174,6 +195,8 @@ def get_listings(search, region, set_name, result, set_values, already_scraped):
                 value_info = set_values[card_id]
                 if len(value_info) == 1:
                     value_info = value_info[0]
+                    is_match = is_card_match(item_title, value_info.name)
+                    if not is_match: continue
                 else:
                     matches = []
                     for info in value_info:
@@ -210,16 +233,21 @@ def get_listings(search, region, set_name, result, set_values, already_scraped):
                 listing.valuation = float(value_info.ungraded)
                 listing.link = item_link
                 listing.image = item_image
-                postage = item_postage.replace("£", "").replace("$", "").replace(",", "")
+                postage = item_postage.replace("£", "").replace("$", "").replace(",", "").replace("+","")
                 if item_postage == 'Free' or item_postage == 'Postage not specified':
                     postage = 0
-                if postage != '': postage = float(postage)
+                if isinstance(postage, str):
+                    postage = float(0)
+                postage = float(postage)
                 listing.postage = postage
+                item_price = float(item_price)
                 listing.price = float(item_price)
                 listing.identified_as = value_info.name
                 listing.seller_info = item_seller_info
-                listing.price_diff_raw = float(value_info.ungraded) - float(item_price)
-                listing.price_diff_percent = round((listing.price_diff_raw / item_price) * 100,1)
+                listing.total_price = postage + item_price
+                listing.price_diff_raw = float(value_info.ungraded) - float(item_price + postage)
+                listing.price_diff_percent = round((listing.price_diff_raw / (item_price + postage)) * 100,1)
+                listing.auction_type = item_auction_type
                 all_listings.append(listing)
                 tot_listings += 1
 
@@ -274,94 +302,105 @@ def write_listings_to_db_remote(listings):
         config = json.load(config_file)
     with open('ssh_config.json', 'r') as config_file:
         ssh_config = json.load(config_file)
+    retries = 3
+    for attempt in range(retries):
+        try:
+            with sshtunnel.SSHTunnelForwarder(
+                    ('ssh.pythonanywhere.com'),
+                    ssh_username=ssh_config['user'],
+                    ssh_password=ssh_config['password'],
+                    remote_bind_address=(
+                    ssh_config['host'], 3306)
+            ) as tunnel:
+                connection = MySQLdb.connect(
+                    user=config['user'],
+                    passwd=config['password'],
+                    host='127.0.0.1', port=tunnel.local_bind_port,
+                    db=config['database'],
+                )
+                '''
+                # Establish a connection to the MySQL server
+                connection = mysql.connector.connect(
+                    host=config['host'],
+                    user=config['user'],
+                    password=config['password'],
+                    database=config['database'],
+                    auth_plugin=config['auth_plugin']  # Specify the authentication plugin
+                )
+                '''
+                # Create a cursor object to execute SQL commands
+                cursor = connection.cursor()
+                drop_table_query = 'DROP TABLE IF EXISTS listings;'
+                cursor.execute(drop_table_query)
 
-    with sshtunnel.SSHTunnelForwarder(
-            ('ssh.pythonanywhere.com'),
-            ssh_username=ssh_config['user'],
-            ssh_password=ssh_config['password'],
-            remote_bind_address=(
-            ssh_config['host'], 3306)
-    ) as tunnel:
-        connection = MySQLdb.connect(
-            user=config['user'],
-            passwd=config['password'],
-            host='127.0.0.1', port=tunnel.local_bind_port,
-            db=config['database'],
-        )
-        '''
-        # Establish a connection to the MySQL server
-        connection = mysql.connector.connect(
-            host=config['host'],
-            user=config['user'],
-            password=config['password'],
-            database=config['database'],
-            auth_plugin=config['auth_plugin']  # Specify the authentication plugin
-        )
-        '''
-        # Create a cursor object to execute SQL commands
-        cursor = connection.cursor()
-        drop_table_query = 'DROP TABLE IF EXISTS listings;'
-        cursor.execute(drop_table_query)
+                create_table_query = '''
+                CREATE TABLE IF NOT EXISTS listings (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    title VARCHAR(100),
+                    set_name VARCHAR(100),
+                    valuation FLOAT,
+                    price FLOAT,
+                    image VARCHAR(100),
+                    postage FLOAT,
+                    link VARCHAR(100),
+                    seller_info VARCHAR(100),
+                    price_diff_raw FLOAT,
+                    price_diff_percent FLOAT,
+                    identified_as VARCHAR(100),
+                    auction_type VARCHAR(100),
+                    total_price FLOAT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                '''
+                cursor.execute(create_table_query)
+                i = 0
+                batch_size = 500
+                batch_data = []
+                for listing in listings:
+                    i += 1
+                    if i % 50 == 0: print(i)
+                    insert_query = '''
+                    INSERT INTO listings (title, set_name, valuation, price, image, postage, link, seller_info, price_diff_raw, price_diff_percent, identified_as, auction_type,
+                    total_price)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+                    '''
+                    # Prepare the data as a tuple
+                    data = (
+                        strip_unsupported_characters(listing.title),
+                        listing.set,
+                        listing.valuation,
+                        listing.price,
+                        listing.image,
+                        listing.postage,
+                        listing.link,
+                        listing.seller_info,
+                        listing.price_diff_raw,
+                        listing.price_diff_percent,
+                        listing.identified_as,
+                        listing.auction_type,
+                        listing.total_price
+                    )
+                    # Append the current row's data to the batch
+                    batch_data.append(data)
 
-        create_table_query = '''
-        CREATE TABLE IF NOT EXISTS listings (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            title VARCHAR(100),
-            set_name VARCHAR(100),
-            valuation VARCHAR(100),
-            price VARCHAR(100),
-            image VARCHAR(100),
-            postage VARCHAR(100),
-            link VARCHAR(100),
-            seller_info VARCHAR(100),
-            price_diff_raw VARCHAR(100),
-            price_diff_percent VARCHAR(100),
-            identified_as VARCHAR(100),
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-        '''
-        cursor.execute(create_table_query)
-        i = 0
-        batch_size = 500
-        batch_data = []
-        for listing in listings:
-            i += 1
-            if i % 50 == 0: print(i)
-            insert_query = '''
-            INSERT INTO listings (title, set_name, valuation, price, image, postage, link, seller_info, price_diff_raw, price_diff_percent, identified_as)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
-            '''
-            # Prepare the data as a tuple
-            data = (
-                strip_unsupported_characters(listing.title),
-                listing.set,
-                str(listing.valuation),
-                str(listing.price),
-                listing.image,
-                str(listing.postage),
-                listing.link,
-                listing.seller_info,
-                str(listing.price_diff_raw),
-                str(listing.price_diff_percent),
-                listing.identified_as
-            )
-            # Append the current row's data to the batch
-            batch_data.append(data)
-
-            # If we have enough data for a batch, execute the insert
-            if len(batch_data) == batch_size:
-                cursor.executemany(insert_query, batch_data)
-                batch_data.clear()  # Clear the batch for the next set of data
+                    # If we have enough data for a batch, execute the insert
+                    if len(batch_data) == batch_size:
+                        cursor.executemany(insert_query, batch_data)
+                        batch_data.clear()  # Clear the batch for the next set of data
+                        connection.commit()
+                    # print(insert_query, data)
+                    # Execute the query with the data
+                    #cursor.execute(insert_query, data)
+                if batch_data:
+                    cursor.executemany(insert_query, batch_data)  # Insert remaining data
+                    connection.commit()
                 connection.commit()
-            # print(insert_query, data)
-            # Execute the query with the data
-            #cursor.execute(insert_query, data)
-        if batch_data:
-            cursor.executemany(insert_query, batch_data)  # Insert remaining data
-            connection.commit()
-        connection.commit()
-        cursor.close()
-        connection.close()
+                cursor.close()
+                connection.close()
+        except:
+            wait_time = 2 ** attempt
+            print("Exception occured, trying again in", wait_time, "seconds")
+            time.sleep(wait_time)
 
 
 def write_listings_to_db_local(listings):
@@ -387,15 +426,17 @@ def write_listings_to_db_local(listings):
             id INT AUTO_INCREMENT PRIMARY KEY,
             title VARCHAR(100),
             set_name VARCHAR(100),
-            valuation VARCHAR(100),
-            price VARCHAR(100),
+            valuation FLOAT,
+            price FLOAT,
             image VARCHAR(100),
-            postage VARCHAR(100),
+            postage FLOAT,
             link VARCHAR(100),
             seller_info VARCHAR(100),
-            price_diff_raw VARCHAR(100),
-            price_diff_percent VARCHAR(100),
+            price_diff_raw FLOAT,
+            price_diff_percent FLOAT,
             identified_as VARCHAR(100),
+            auction_type VARCHAR(100),
+            total_price FLOAT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         '''
@@ -405,22 +446,25 @@ def write_listings_to_db_local(listings):
             i += 1
             if i % 50 == 0: print(i)
             insert_query = '''
-            INSERT INTO listings (title, set_name, valuation, price, image, postage, link, seller_info, price_diff_raw, price_diff_percent, identified_as)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+            INSERT INTO listings (title, set_name, valuation, price, image, postage, link, seller_info, price_diff_raw, price_diff_percent, identified_as, auction_type,
+            total_price)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
             '''
             # Prepare the data as a tuple
             data = (
                 strip_unsupported_characters(listing.title),
                 listing.set,
-                str(listing.valuation),
-                str(listing.price),
+                listing.valuation,
+                listing.price,
                 listing.image,
-                str(listing.postage),
+                listing.postage,
                 listing.link,
                 listing.seller_info,
-                str(listing.price_diff_raw),
-                str(listing.price_diff_percent),
-                listing.identified_as
+                listing.price_diff_raw,
+                listing.price_diff_percent,
+                listing.identified_as,
+                listing.auction_type,
+                listing.total_price
             )
 
             # print(insert_query, data)
@@ -445,12 +489,13 @@ async def scrape_listings():
         set_name = line.strip().replace("Pokemon ", "")
         if set_name in excluded_sets: continue
         i += 1
-        if i > 10: break
+       # if i > 2: break
         set_names.append(set_name.lower())
-
+    all_set_names = list(set_names)
+    #set_names = ['pop series 5']
     values_dict = get_values_from_db()
     start_time = time.time()
-    all_listings = await get_all_listings('UK', set_names, 10, values_dict)
+    all_listings = await get_all_listings('UK', set_names, 10, values_dict, all_set_names)
     write_listings_to_db_local(all_listings)
     write_listings_to_db_remote(all_listings)
     print(len(all_listings))

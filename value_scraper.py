@@ -117,6 +117,8 @@ def fetch_values(url):
     return source
 
 def get_card_id(title):
+    if 'booster pack' in title: return 'booster pack'
+    if 'booster box' in title: return 'booster box'
     for word in title.split(" "):
         if '/' in word or '#' in word:
             word = word.replace('#','')
@@ -233,9 +235,9 @@ def write_values_to_db_remote(values):
             id INT AUTO_INCREMENT PRIMARY KEY,
             name VARCHAR(100),
             set_name VARCHAR(100),
-            ungraded_price VARCHAR(100),
-            psa9_price VARCHAR(100),
-            psa10_price VARCHAR(100),
+            ungraded_price FLOAT,
+            psa9_price FLOAT,
+            psa10_price FLOAT,
             card_id VARCHAR(100),
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
@@ -256,9 +258,9 @@ def write_values_to_db_remote(values):
             data = (
                 value.name,
                 value.set,
-                str(value.ungraded),
-                str(value.psa9),
-                str(value.psa10),
+                value.ungraded,
+                value.psa9,
+                value.psa10,
                 value.card_id
             )
 
@@ -312,9 +314,9 @@ def write_values_to_db_local(values):
         id INT AUTO_INCREMENT PRIMARY KEY,
         name VARCHAR(100),
         set_name VARCHAR(100),
-        ungraded_price VARCHAR(100),
-        psa9_price VARCHAR(100),
-        psa10_price VARCHAR(100),
+        ungraded_price FLOAT,
+        psa9_price FLOAT,
+        psa10_price FLOAT,
         card_id VARCHAR(100),
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
@@ -333,9 +335,9 @@ def write_values_to_db_local(values):
         data = (
             value.name,
             value.set,
-            str(value.ungraded),
-            str(value.psa9),
-            str(value.psa10),
+            value.ungraded,
+            value.psa9,
+            value.psa10,
             value.card_id
         )
 
