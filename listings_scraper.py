@@ -48,8 +48,15 @@ def strip_unsupported_characters(input_string):
     return re.sub(r'[^\x00-\x7F]+', '', input_string)
 
 async def fetch(url, session):
-    async with session.get(url) as response:
-        return await response.text()
+    try:
+        async with session.get(url) as response:
+            try:
+                response.raise_for_status()  # Raise an error for bad status codes
+                return await response.text()
+            except:
+                return await ''
+    except:
+        return ''
 
 def get_card_id(title):
     if 'booster pack' in title: return 'booster pack'
@@ -59,6 +66,8 @@ def get_card_id(title):
             word = word.replace('#','')
             if '/' in word:
                 word = word.split("/")[0]
+            if not word.isdigit():
+                continue
             word = word.lstrip('0')
             return word
     return None
@@ -78,7 +87,7 @@ async def get_all_listings(region, set_names, num_pages, values_dict, full_set_n
             search_query = search.replace(" ", "+")
             url = 'https://' + site + '/sch/i.html?_nkw=' + search_query + '&_dmd=1&_ipg=240&_pgn=' + str(page_num)
             urls.append((set_name, url))
-            if i % 15 == 0:
+            if i % 100 == 0:
                 url_batches.append(urls)
                 urls = list([])
     if len(urls) > 0:
@@ -161,7 +170,7 @@ def get_listings(search, region, set_name, result, set_values, already_scraped, 
             if ' bids' in text:
                 item_auction_type = 'Auction'
             if span_tag.get('class') == ['s-item__space_bar']:
-                if " to " in item_price or set_name.lower() not in item_title.lower():
+                if " to " in str(item_price) or set_name.lower() not in item_title.lower():
                     continue
                 item_image = title_images.get(item_title, 'None')
                 for word in item_postage.split(" "):
@@ -191,11 +200,13 @@ def get_listings(search, region, set_name, result, set_values, already_scraped, 
                 print('Price:', item_price)
                 print('Postage:', item_postage)
                 print('Seller info:', item_seller_info)
+
+                # get card id
+                card_id = get_card_id(item_title)
+                print('Card id:', card_id)
                 if item_link in already_scraped:
                     continue
                 already_scraped.append(item_link)
-                # get card id
-                card_id = get_card_id(item_title)
                 if card_id is None: continue
                 if card_id not in set_values: continue
                 value_info = set_values[card_id]
@@ -232,7 +243,7 @@ def get_listings(search, region, set_name, result, set_values, already_scraped, 
                 item_price = float(item_price)
                 if "£" in orig_price or "GBP" in orig_price:
                     item_price *= GBP_USD
-
+                orig_postage = item_postage
                 item_price = float(item_price)
                 listing = Listing()
                 listing.title = item_title
@@ -245,7 +256,12 @@ def get_listings(search, region, set_name, result, set_values, already_scraped, 
                 if item_postage == 'Free' or item_postage == 'Postage not specified':
                     postage = 0
                 if isinstance(postage, str):
-                    postage = float(0)
+                    for word in postage.split(" "):
+                        if word.replace('.','').isdigit():
+                            postage = float(word)
+                            break
+                    if isinstance(postage, str):
+                        postage = float(0)
                 if "£" in orig_postage or "GBP" in orig_price:
                     postage *= GBP_USD
                 postage = float(postage)
@@ -502,6 +518,9 @@ def write_listings_to_db_local(listings):
         cursor.close()
         connection.close()
 
+async def fetch_region_listings(region, set_names, limit, values_dict, all_set_names):
+    return await get_all_listings(region, set_names, limit, values_dict, all_set_names)
+
 async def scrape_listings():
     set_names = []
     excluded_sets = []
@@ -520,11 +539,21 @@ async def scrape_listings():
        # if i > 2: break
         set_names.append(set_name.lower())
     all_set_names = list(set_names)
+    #set_names = ['base set']
     #set_names = ['pop series 5']
     values_dict = get_values_from_db()
     start_time = time.time()
-    all_listings = await get_all_listings('UK', set_names, 10, values_dict, all_set_names)
-    all_listings += await get_all_listings('US', set_names, 10, values_dict, all_set_names)
+  #  all_listings = await get_all_listings('UK', set_names, 10, values_dict, all_set_names)
+  #  all_listings += await get_all_listings('US', set_names, 10, values_dict, all_set_names)
+    all_listings = await asyncio.gather(
+        fetch_region_listings('US', set_names, 20, values_dict, all_set_names),
+        fetch_region_listings('UK', set_names, 20, values_dict, all_set_names)
+        #fetch_region_listings('Germany', set_names, 10, values_dict, all_set_names),
+        #fetch_region_listings('Canada', set_names, 10, values_dict, all_set_names)
+    )
+
+    # Flatten the list of listings from all regions
+    all_listings = [item for sublist in all_listings for item in sublist]
 
     write_listings_to_db_local(all_listings)
     write_listings_to_db_remote(all_listings)

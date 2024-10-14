@@ -67,13 +67,111 @@ def deal_page(request):
         auction_type_buyitnow_selected = False
         auction_type_both_selected = False
 
+    condition_all_selected = True
+    condition_dmg_selected = False
+    condition_hp_selected = False
+    condition_mp_selected = False
+    condition_lp_selected = False
+    condition_nm_selected = False
+    condition_mt_selected = False
+    condition_all_selstring = ''
+    condition_dmg_selstring = ''
+    condition_lp_selstring = ''
+    condition_mp_selstring = ''
+    condition_hp_selstring = ''
+    condition_nm_selstring = ''
+    condition_mt_selstring = ''
+    search_condition_all = request.args.get("condition_all")
+    search_condition_dmg = request.args.get("condition_dmg")
+    search_condition_hp = request.args.get("condition_hp")
+    search_condition_mp = request.args.get("condition_mp")
+    search_condition_lp = request.args.get("condition_lp")
+    search_condition_nm = request.args.get("condition_nm")
+    search_condition_mt = request.args.get("condition_mt")
+    condition_is_all = True
+    if search_condition_all == 'None': search_condition_all = ''
+    if search_condition_dmg == 'None': search_condition_dmg = ''
+    if search_condition_hp == 'None': search_condition_hp = ''
+    if search_condition_mp == 'None': search_condition_mp = ''
+    if search_condition_lp == 'None': search_condition_lp = ''
+    if search_condition_nm == 'None': search_condition_nm = ''
+    if search_condition_mt == 'None': search_condition_mt = ''
+
+    if search_condition_dmg:
+        condition_is_all = False
+        condition_dmg_selstring = 'checked'
+        condition_dmg_selected = True
+        condition_all_selected = False
+        condition_hp_selected = False
+        condition_mp_selected = False
+        condition_lp_selected = False
+        condition_nm_selected = False
+        condition_mt_selected = False
+
+    if search_condition_lp:
+        condition_is_all = False
+        condition_lp_selstring = 'checked'
+        condition_lp_selected = True
+        condition_dmg_selected = False
+        condition_hp_selected = False
+        condition_mp_selected = False
+        condition_all_selected = False
+        condition_nm_selected = False
+        condition_mt_selected = False
+
+    if search_condition_mp:
+        condition_is_all = False
+        condition_mp_selstring = 'checked'
+        condition_mp_selected = True
+        condition_dmg_selected = False
+        condition_hp_selected = False
+        condition_all_selected = False
+        condition_lp_selected = False
+        condition_nm_selected = False
+        condition_mt_selected = False
+
+    if search_condition_hp:
+        condition_is_all = False
+        condition_hp_selstring = 'checked'
+        condition_hp_selected = True
+        condition_dmg_selected = False
+        condition_all_selected = False
+        condition_mp_selected = False
+        condition_lp_selected = False
+        condition_nm_selected = False
+        condition_mt_selected = False
+
+    if search_condition_nm:
+        condition_is_all = False
+        condition_nm_selstring = 'checked'
+        condition_nm_selected = True
+        condition_dmg_selected = False
+        condition_hp_selected = False
+        condition_mp_selected = False
+        condition_lp_selected = False
+        condition_all_selected = False
+        condition_mt_selected = False
+
+    if search_condition_mt:
+        condition_is_all = False
+        condition_mt_selstring = 'checked'
+        condition_mt_selected = True
+        condition_dmg_selected = False
+        condition_hp_selected = False
+        condition_mp_selected = False
+        condition_lp_selected = False
+        condition_nm_selected = False
+        condition_mt_selected = False#
+
     currency_usd_selected = True
     currency_gbp_selected = False
     search_currency = request.args.get("display_currency")
     if search_currency == 'USD':
         currency_usd_selected = True
+        currency_gbp_selected = False
     elif search_currency == 'GBP':
         currency_gbp_selected = True
+        currency_usd_selected = False
 
     currency_gbp_selstring = ''
     currency_usd_selstring = ''
@@ -84,6 +182,7 @@ def deal_page(request):
     auction_type_auction_selstring = ''
     auction_type_buyitnow_selstring = ''
     auction_type_both_selstring = ''
+
     if region_US_selected:
         region_US_selstring = 'checked'
     elif region_UK_selected:
@@ -152,6 +251,8 @@ def deal_page(request):
             margin: 10px; /* Margin around the caption */
         }
         '''
+
+
     search_keywords = request.args.get("search_query")
     if search_keywords is None:
         search_keywords = ''
@@ -202,10 +303,33 @@ def deal_page(request):
                 <input type="radio" name="display_currency" value="GBP" {currency_gbp_selstring}> £ GBP
             </label>
         </div>
+        <div class="condition" style="width:500px">
+            <label>Condition:</label>
+            <label>
+                <input type="checkbox" name="condition_all" value="All" {condition_all_selstring}> All
+            </label>
+            <label>
+                <input type="checkbox" name="condition_dmg" value="DMG" {condition_dmg_selstring}> DMG
+            </label>
+            <label>
+                <input type="checkbox" name="condition_hp" value="HP" {condition_hp_selstring}> HP
+            </label>
+            <label>
+                <input type="checkbox" name="condition_mp" value="MP" {condition_mp_selstring}> MP
+            </label>
+            <label>
+                <input type="checkbox" name="condition_lp" value="LP" {condition_lp_selstring}> LP
+            </label>
+            <label>
+                <input type="checkbox" name="condition_nm" value="HP" {condition_nm_selstring}> NM
+            </label>
+            <label>
+                <input type="checkbox" name="condition_mt" value="HP" {condition_mt_selstring}> MT
+            </label>
+        </div>
         <button type="submit" style="width:450px">Search</button>
     </form>
     '''
-
     # build search query
 
     search_region = request.args.get("region")
@@ -345,6 +469,45 @@ def deal_page(request):
     # If there are any conditions, add them to the query
     if conditions:
         query += " WHERE " + " AND ".join(conditions)
+    added_cond = False
+    if not condition_is_all:
+        query += " AND ("
+    if not condition_is_all:
+        if search_condition_dmg:
+            query+= "BINARY title LIKE %s"
+            params.append('%DMG%')
+            added_cond = True
+        if search_condition_lp:
+            if added_cond: query += " OR "
+            query+= "BINARY title LIKE %s"
+            params.append('%LP%')
+            added_cond = True
+        if search_condition_mp:
+            if added_cond: query += " OR "
+            query+= "BINARY title LIKE %s"
+            params.append('%MP%')
+            added_cond = True
+        if search_condition_hp:
+            if added_cond: query += " OR "
+            query+= "BINARY title LIKE %s"
+            params.append('%HP%')
+            added_cond = True
+
+        if search_condition_nm:
+            if added_cond: query += " OR "
+            query+= "BINARY title LIKE %s"
+            params.append('%NM%')
+            added_cond = True
+
+        if search_condition_mt:
+            if added_cond: query += " OR "
+            query+= "BINARY title LIKE %s"
+            params.append('%MT%')
+            added_cond = True
+    if not condition_is_all:
+        query += ")"
+    html += "<!-- " + query + "--!>"
+#    return html
 
     # Add the ORDER BY and LIMIT clauses
     query += order_string
@@ -366,6 +529,8 @@ def deal_page(request):
     for page_num in range(50):
         if (page_num) * 25 > len(results) + 25 * orig_page_num - 25: break
         page_url = f'pokemondeals?search_query={search_keywords}&region={search_region}&auction_type={search_auction_type}&sort={search_sort}'
+        page_url += f"&condition_all={search_condition_all}&condition_dmg={search_condition_dmg}&condition_lp={search_condition_lp}&condition_mp={search_condition_mp}&condition_hp={search_condition_hp}&condition_nm={search_condition_nm}&condition_mt={search_condition_mt}"
+        page_url += f'&display_currency={search_currency}'
         page_url += '&page_num=' + str(page_num + 1)
         if page_num + 1 != cur_page_num:
             html += f'<a href="{page_url}">{page_num+1}</a> '
@@ -379,15 +544,21 @@ def deal_page(request):
     price_diff_percent_page_url = f'pokemondeals?search_query={search_keywords}&region={search_region}&auction_type={search_auction_type}&display_currency={search_currency}&sort=price_diff_percent_desc'
     if search_sort == 'price_diff_percent_desc':
         price_diff_percent_page_url = f'pokemondeals?search_query={search_keywords}&region={search_region}&auction_type={search_auction_type}&display_currency={search_currency}&sort=price_diff_percent_asc'
+    price_diff_percent_page_url += f"&condition_all={search_condition_all}&condition_dmg={search_condition_dmg}&condition_lp={search_condition_lp}&condition_mp={search_condition_mp}&condition_hp={search_condition_hp}&condition_nm={search_condition_nm}&condition_mt={search_condition_mt}"
     price_diff_raw_page_url = f'pokemondeals?search_query={search_keywords}&region={search_region}&auction_type={search_auction_type}&display_currency={search_currency}&sort=price_diff_raw_desc'
     if search_sort == 'price_diff_raw_desc':
         price_diff_raw_page_url = f'pokemondeals?search_query={search_keywords}&region={search_region}&auction_type={search_auction_type}&display_currency={search_currency}&sort=price_diff_raw_asc'
+    price_diff_raw_page_url += f"&condition_all={search_condition_all}&condition_dmg={search_condition_dmg}&condition_lp={search_condition_lp}&condition_mp={search_condition_mp}&condition_hp={search_condition_hp}&condition_nm={search_condition_nm}&condition_mt={search_condition_mt}"
+
     price_page_url = f'pokemondeals?search_query={search_keywords}&region={search_region}&auction_type={search_auction_type}&display_currency={search_currency}&sort=price_desc'
     if search_sort == 'price_desc':
         price_page_url = f'pokemondeals?search_query={search_keywords}&region={search_region}&auction_type={search_auction_type}&display_currency={search_currency}&sort=price_asc'
+    price_page_url += f"&condition_all={search_condition_all}&condition_dmg={search_condition_dmg}&condition_lp={search_condition_lp}&condition_mp={search_condition_mp}&condition_hp={search_condition_hp}&condition_nm={search_condition_nm}&condition_mt={search_condition_mt}"
+
     valuation_page_url = f'pokemondeals?search_query={search_keywords}&region={search_region}&auction_type={search_auction_type}&display_currency={search_currency}&sort=valuation_desc'
     if search_sort == 'valuation_desc':
         valuation_page_url = f'pokemondeals?search_query={search_keywords}&region={search_region}&auction_type={search_auction_type}&display_currency={search_currency}&sort=valuation_asc'
+    valuation_page_url += f"&condition_all={search_condition_all}&condition_dmg={search_condition_dmg}&condition_lp={search_condition_lp}&condition_mp={search_condition_mp}&condition_hp={search_condition_hp}&condition_nm={search_condition_nm}&condition_mt={search_condition_mt}"
 
     html += f'''
             <table border="1">
@@ -445,6 +616,8 @@ def deal_page(request):
     for page_num in range(50):
         if (page_num) * 25 > len(results) + 25 * orig_page_num - 25: break
         page_url = f'pokemondeals?search_query={search_keywords}&region={search_region}&auction_type={search_auction_type}&sort={search_sort}'
+        page_url += f"&condition_all={search_condition_all}&condition_dmg={search_condition_dmg}&condition_lp={search_condition_lp}&condition_mp={search_condition_mp}&condition_hp={search_condition_hp}&condition_nm={search_condition_nm}&condition_mt={search_condition_mt}"
+        page_url += f'&display_currency={search_currency}'
         page_url += '&page_num=' + str(page_num + 1)
         if page_num + 1 != cur_page_num:
             html += f'<a href="{page_url}">{page_num+1}</a> '

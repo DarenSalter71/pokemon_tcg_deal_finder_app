@@ -48,7 +48,7 @@ async def get_set_values(set_names):
 
 def fetch_values(url):
     print(url)
-    SCROLL_PAUSE_TIME = 0
+    SCROLL_PAUSE_TIME = 1
     chrome_options = webdriver.ChromeOptions()
     chrome_options.add_argument("--start-maximized")
     chrome_options.add_argument("--no-sandbox")
@@ -98,7 +98,7 @@ def fetch_values(url):
             break
         cur_len = len(browser.page_source)
         if cur_len == last_len:
-            if time.time() - last_time > 3: break
+            if time.time() - last_time > 5: break
             continue
         browser.execute_script("window.scrollTo(0, document.body.scrollHeight);")
         currHeight = browser.execute_script("return document.body.scrollHeight")
@@ -111,6 +111,7 @@ def fetch_values(url):
         prevHeight = currHeight
         last_len = len(browser.page_source)
         last_time = time.time()
+        time.sleep(SCROLL_PAUSE_TIME)
     source = browser.page_source
     browser.close()
     browser.quit()
